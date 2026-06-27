@@ -1,17 +1,56 @@
-// خدمة بسيطة (service worker) — مطلوبة لجعل التطبيق "PWA" قابل للتركيب كـ APK
-const CACHE_NAME = "delivery-app-v1";
+// خدمة محسّنة: تخزن الملفات الأساسية محلياً لفتح فوري، وتحدّث بالخلفية بهدوء
+const CACHE_NAME = "delivery-app-v2";
+
+const CORE_ASSETS = [
+  "/app/",
+  "/app/index.html",
+  "/app/manifest.json",
+];
 
 self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS))
+  );
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys
+          .filter((key) => key !== CACHE_NAME)
+          .map((key) => caches.delete(key))
+      )
+    )
+  );
+  self.clients.claim();
 });
 
-// استراتيجية بسيطة: المرور للشبكة أولاً، مع رجوع للكاش لو في انقطاع
+// استراتيجية: كاش أولاً للفتح الفوري، مع تحديث الكاش بالخلفية من الشبكة في كل مرة
 self.addEventListener("fetch", (event) => {
+  if (event.request.method !== "GET") return;
+
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    caches.open(CACHE_NAME).then(async (cache) => {
+      const cached = await cache.match(event.request);
+
+      const networkFetch = fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            cache.put(event.request, response.clone());
+          }
+          return response;
+        })
+        .catch(() => null);
+
+      if (cached) {
+        networkFetch;
+        return cached;
+      }
+
+      const networkResponse = await networkFetch;
+      return networkResponse || cached;
+    })
   );
 });
