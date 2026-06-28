@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "io.github.zidanammar7111_cpu.twa",
+    "sha256_cert_fingerprints": ["6F:0D:54:5D:C3:AA:9B:2C:65:68:CB:B1:F8:7C:DC:50:D5:CD:A0:17:DF:42:DC:52:D7:5E:78:04:34:9C:DF:30"]
+  }
+}]
