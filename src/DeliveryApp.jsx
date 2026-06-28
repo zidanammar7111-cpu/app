@@ -5,7 +5,10 @@ import {
   Calendar, ChevronRight as ChevronRightIcon, LogOut, User, Eye, EyeOff,
   TrendingUp, TrendingDown, RefreshCw, Edit3, Check, WifiOff, Wifi
 } from "lucide-react";
-import { loadDataOnce, saveData, subscribeToData } from "./firebase";
+import {
+  loadDataOnce, saveData, subscribeToData,
+  registerWithEmail, loginWithEmail, logout as firebaseLogout, subscribeToAuth,
+} from "./firebase";
 
 /* ============================================================
    نظام الألوان والتصميم
@@ -170,40 +173,50 @@ function SaveButton({ onClick, label = "حفظ", color = COLORS.green, disabled 
 }
 
 /* ============================================================
-   شاشة تسجيل الدخول / إنشاء حساب
+   شاشة تسجيل الدخول / إنشاء حساب — Firebase Authentication حقيقي
    ============================================================ */
-function AuthScreen({ data, onLogin, onRegister }) {
-  const [mode, setMode] = useState(data.users.length === 0 ? "register" : "login");
-  const [username, setUsername] = useState("");
+function AuthScreen({ hasAnyProfile, onAuthSuccess }) {
+  const [mode, setMode] = useState(hasAnyProfile ? "login" : "register");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const submit = () => {
+  const translateError = (code) => {
+    if (code === "auth/email-already-in-use") return "هذا البريد الإلكتروني مستخدم بالفعل";
+    if (code === "auth/invalid-email") return "البريد الإلكتروني غير صحيح";
+    if (code === "auth/weak-password") return "كلمة المرور ضعيفة جداً (6 أحرف على الأقل)";
+    if (code === "auth/user-not-found" || code === "auth/wrong-password" || code === "auth/invalid-credential") {
+      return "البريد الإلكتروني أو كلمة المرور غير صحيحة";
+    }
+    return "حدث خطأ، حاول مرة أخرى";
+  };
+
+  const submit = async () => {
     setError("");
-    if (!username.trim() || !password.trim()) {
-      setError("أدخل اسم المستخدم وكلمة المرور");
+    if (!email.trim() || !password.trim()) {
+      setError("أدخل البريد الإلكتروني وكلمة المرور");
       return;
     }
-    if (mode === "register") {
-      if (data.users.some((u) => u.username === username.trim())) {
-        setError("اسم المستخدم مستخدم بالفعل");
-        return;
+    if (mode === "register" && !displayName.trim()) {
+      setError("أدخل اسمك");
+      return;
+    }
+    setBusy(true);
+    try {
+      if (mode === "register") {
+        const user = await registerWithEmail(email.trim(), password);
+        onAuthSuccess(user, displayName.trim());
+      } else {
+        const user = await loginWithEmail(email.trim(), password);
+        onAuthSuccess(user, null);
       }
-      onRegister({
-        id: uid(),
-        username: username.trim(),
-        password,
-        displayName: displayName.trim() || username.trim(),
-      });
-    } else {
-      const user = data.users.find((u) => u.username === username.trim() && u.password === password);
-      if (!user) {
-        setError("اسم المستخدم أو كلمة المرور غير صحيحة");
-        return;
-      }
-      onLogin(user);
+    } catch (e) {
+      setError(translateError(e.code));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -244,8 +257,8 @@ function AuthScreen({ data, onLogin, onRegister }) {
             <input style={inputStyle} value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="مثال: محمد" />
           </Field>
         )}
-        <Field label="اسم المستخدم">
-          <input style={inputStyle} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="اسم المستخدم" autoCapitalize="none" />
+        <Field label="البريد الإلكتروني">
+          <input style={inputStyle} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="example@email.com" autoCapitalize="none" />
         </Field>
         <Field label="كلمة المرور">
           <div style={{ position: "relative" }}>
@@ -254,7 +267,7 @@ function AuthScreen({ data, onLogin, onRegister }) {
               type={showPass ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="كلمة المرور"
+              placeholder="كلمة المرور (6 أحرف على الأقل)"
             />
             <button
               onClick={() => setShowPass((s) => !s)}
@@ -267,12 +280,12 @@ function AuthScreen({ data, onLogin, onRegister }) {
 
         {error && <div style={{ color: COLORS.red, fontSize: 13, marginBottom: 10, fontWeight: 600 }}>{error}</div>}
 
-        <SaveButton onClick={submit} label={mode === "login" ? "دخول" : "إنشاء الحساب"} />
+        <SaveButton onClick={submit} disabled={busy} label={busy ? "..." : mode === "login" ? "دخول" : "إنشاء الحساب"} />
       </div>
 
-      {mode === "register" && data.users.length > 0 && (
+      {mode === "register" && (
         <div style={{ textAlign: "center", color: COLORS.textFaint, fontSize: 13, marginTop: 16 }}>
-          سيتمكن هذا الحساب من رؤية وتعديل نفس بيانات الحسابات الأخرى
+          سيتمكن هذا الحساب من رؤية وتعديل نفس بيانات الحسابات الأخرى المسجّلة بهذا التطبيق
         </div>
       )}
     </div>
@@ -285,7 +298,8 @@ function AuthScreen({ data, onLogin, onRegister }) {
 export default function DeliveryApp() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [authUser, setAuthUser] = useState(null); // مستخدم Firebase Auth الحقيقي (null = لسا ما تأكدنا، false = مش مسجل دخول)
+  const [authChecked, setAuthChecked] = useState(false);
   const [screen, setScreen] = useState("home"); // home, company, reports, settings, entryForm, convert
   const [selectedCompanyId, setSelectedCompanyId] = useState(null);
   const [entryFormType, setEntryFormType] = useState(null); // order, debt, repay, expense
@@ -297,19 +311,40 @@ export default function DeliveryApp() {
 
   // نتجاهل أول إشعار يجي من onSnapshot لأنو هو نفس الشي يلي حفظناه توّا (يمنع وميض)
   const skipNextSnapshot = useRef(false);
+  const pendingDisplayName = useRef(null); // اسم العرض يلي لسا ما انحفظ بـ Firestore (وقت التسجيل)
 
-  // تحميل البيانات أول مرة من Firestore + الاشتراك بالتحديثات اللحظية
+  // مراقبة حالة تسجيل الدخول الحقيقية من Firebase Auth
   useEffect(() => {
+    const unsub = subscribeToAuth((user) => {
+      setAuthUser(user || false);
+      setAuthChecked(true);
+    });
+    return () => unsub();
+  }, []);
+
+  // تحميل البيانات أول مرة من Firestore + الاشتراك بالتحديثات اللحظية (فقط بعد تسجيل الدخول)
+  useEffect(() => {
+    if (!authUser) return;
     let unsub;
     (async () => {
       const loaded = await loadDataOnce();
-      if (!loaded) {
-        // أول مرة بيفتح فيها أي جهاز التطبيق — ننشئ بيانات افتراضية بـ Firestore
-        await saveData(DEFAULT_DATA);
-        setData(DEFAULT_DATA);
-      } else {
-        setData(loaded);
+      let current = loaded || DEFAULT_DATA;
+
+      // إذا جاي من تسجيل حساب جديد، نضيف بروفايل المستخدم (اسمه) لقائمة المستخدمين
+      const alreadyExists = current.users.some((u) => u.id === authUser.uid);
+      if (!alreadyExists) {
+        const name = pendingDisplayName.current || authUser.email.split("@")[0];
+        current = {
+          ...current,
+          users: [...current.users, { id: authUser.uid, email: authUser.email, displayName: name }],
+        };
+        await saveData(current);
+        pendingDisplayName.current = null;
+      } else if (!loaded) {
+        await saveData(current);
       }
+
+      setData(current);
       setLoading(false);
 
       // الاشتراك اللحظي: أي تغيير يصير (من مرتك أو من جهاز تاني) بينعكس فوراً هون
@@ -325,7 +360,7 @@ export default function DeliveryApp() {
     return () => {
       if (unsub) unsub();
     };
-  }, []);
+  }, [authUser]);
 
   // مراقبة حالة الاتصال بالإنترنت (التطبيق بيخزن محلياً ويزامن لما يرجع الاتصال)
   useEffect(() => {
@@ -360,6 +395,27 @@ export default function DeliveryApp() {
     setTimeout(() => setToast(null), 1800);
   };
 
+  if (!authChecked) {
+    return (
+      <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ color: COLORS.textDim }}>جارٍ التحميل...</div>
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <AuthScreen
+        hasAnyProfile={true}
+        onAuthSuccess={(user, displayName) => {
+          pendingDisplayName.current = displayName;
+          setLoading(true);
+          setAuthUser(user);
+        }}
+      />
+    );
+  }
+
   if (loading || !data) {
     return (
       <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -368,25 +424,18 @@ export default function DeliveryApp() {
     );
   }
 
-  if (!currentUser) {
-    return (
-      <AuthScreen
-        data={data}
-        onLogin={(user) => setCurrentUser(user)}
-        onRegister={(user) => {
-          persist((prev) => ({ ...prev, users: [...prev.users, user] }));
-          setCurrentUser(user);
-        }}
-      />
-    );
-  }
+  const currentUser = data.users.find((u) => u.id === authUser.uid) || {
+    id: authUser.uid,
+    email: authUser.email,
+    displayName: authUser.email.split("@")[0],
+  };
 
   return (
     <Shell
       data={data}
       persist={persist}
       currentUser={currentUser}
-      onLogout={() => setCurrentUser(null)}
+      onLogout={() => firebaseLogout()}
       screen={screen}
       setScreen={setScreen}
       selectedCompanyId={selectedCompanyId}
@@ -1805,7 +1854,7 @@ function SettingsScreen({ data, persist, currentUser, onBack, onLogout, showToas
         </div>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 800, fontSize: 15 }}>{currentUser.displayName}</div>
-          <div style={{ fontSize: 12, color: COLORS.textFaint }}>@{currentUser.username}</div>
+          <div style={{ fontSize: 12, color: COLORS.textFaint }}>{currentUser.email}</div>
         </div>
         <button onClick={onLogout} style={{ background: "none", border: "none", color: COLORS.red, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700 }}>
           <LogOut size={16} /> خروج
@@ -1837,7 +1886,7 @@ function SettingsScreen({ data, persist, currentUser, onBack, onLogout, showToas
         {data.users.map((u) => (
           <div key={u.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", fontSize: 14, borderBottom: `1px solid ${COLORS.border}` }}>
             <span>{u.displayName}</span>
-            <span style={{ color: COLORS.textFaint, fontSize: 12 }}>@{u.username}</span>
+            <span style={{ color: COLORS.textFaint, fontSize: 12 }}>{u.email}</span>
           </div>
         ))}
         <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 10, lineHeight: 1.6 }}>
@@ -1867,4 +1916,4 @@ function SettingsScreen({ data, persist, currentUser, onBack, onLogout, showToas
       </div>
     </div>
   );
-    }
+        }
